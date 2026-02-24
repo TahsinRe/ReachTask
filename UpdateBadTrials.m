@@ -5,10 +5,10 @@ function [] = UpdateBadTrials(pNum)
 %   1. Load EEG (.set from eeglab) and behavioral (.mat)
 %   2. Verify alignment: # GoCue events in EEG == # trials in theData
 %   3. Apply bad-trial criteria
-%   4. Save updated theData
+%   4. Save: matlab_files/ (full theData with badTrial flags)
+%   5. Drop bad trials -> matlab_files_good/ (good-trials-only for alignment)
 %
-% Alignment: EEG trials are defined by GoCue (213) event order. Behavioral
-% trial t corresponds to the t-th GoCue event. If counts match, alignment is OK.
+% Alignment: EEG trials are defined by GoCue (213) event order.
 
 if nargin < 1
     pNum = input('Participant Number: ');
@@ -20,7 +20,8 @@ cd('C:/Users/tahsi/OneDrive/Desktop/EEG/eeglab2024.0'); eeglab; close;
 rootPath  = 'C:/Users/tahsi/OneDrive/Desktop/EEG/Experiments/ReachTask';
 eegPath   = fullfile(rootPath, 'processed', sprintf('p%d', pNum), 'eeglab');
 behavDir  = fullfile(rootPath, 'data', sprintf('p%d', pNum), 'matlab_files');
-saveDir   = fullfile(rootPath, 'processed', sprintf('p%d', pNum), 'matlab_files');
+saveDir      = fullfile(rootPath, 'processed', sprintf('p%d', pNum), 'matlab_files');
+saveDirGood  = fullfile(rootPath, 'processed', sprintf('p%d', pNum), 'matlab_files_good');
 
 % Fallback: behavior may be in participant folder directly
 if ~exist(behavDir, 'dir')
@@ -29,6 +30,9 @@ end
 
 if ~exist(saveDir, 'dir')
     mkdir(saveDir);
+end
+if ~exist(saveDirGood, 'dir')
+    mkdir(saveDirGood);
 end
 
 if ~exist(eegPath, 'dir')
@@ -41,14 +45,14 @@ end
 %% Bad-trial criteria (adjust as needed)
 GO_CUE_TYPE  = '213';
 
-% Reach accuracy: bad if distTarget > mean + 3*SD (per participant, across blocks)
+% Reach accuracy: bad if distTarget more than 3 SD away from mean (per participant, across blocks)
 useAccuracy_mean3SD = true;
 
-% RT: mark bad if > 3 SD from median (per participant, across blocks)
-useRT_median3SD = true;
+% RT: no longer marking bad by RT in Update (RT bounds used in reach experiment only)
+useRT_median3SD = false;
 
 % MT: mark bad if > 3 SD from median (mirrors RT)
-useMT_median3SD = true;
+useMT_median3SD = false;
 
 %% Find blocks that have both EEG and behavior
 eegFiles = dir(fullfile(eegPath, '*.set'));
@@ -193,10 +197,10 @@ for iBlock = 1:numel(blockNums)
     %% Apply bad-trial criteria
     bad = theData.badTrial(:);  % preserve existing (e.g. no-touch)
 
-    % Reach accuracy: bad if distTarget > mean + 3*SD
+    % Reach accuracy: bad if distTarget more than 3 SD away from mean
     if useAccuracy_mean3SD && ~isempty(distTarget_mean) && isfield(theData, 'distTarget')
         dt = theData.distTarget(:);
-        bad(~isnan(dt) & (dt > distTarget_mean + 3*distTarget_sd)) = 1;
+        bad(~isnan(dt) & (abs(dt - distTarget_mean) > 3*distTarget_sd)) = 1;
     end
 
     % RT: bad if > 3 SD from median
@@ -218,18 +222,47 @@ for iBlock = 1:numel(blockNums)
 
     theData.badTrial = double(bad(:));
 
-    %% Save to processed/p#/matlab_files/
+    %% Save to processed/p#/matlab_files/ (full data with badTrial flags)
     saveFile = fullfile(saveDir, candBeh(1).name);
     save(saveFile, 'theData', '-v7.3');
+
+    %% Drop bad trials -> save good-trials-only to matlab_files_good/ (for alignment with post_ICA)
+    goodIdx = find(bad == 0);
+    theDataGood = subsetTheData(theData, goodIdx, nBehTrials);
+    saveFileGood = fullfile(saveDirGood, candBeh(1).name);
+    theData = theDataGood; %#ok<NASGU>
+    save(saveFileGood, 'theData', '-v7.3');
+
     nBad = sum(bad);
-    fprintf('  Block %d: aligned (%d trials), %d bad -> saved %s\n', b, nBehTrials, nBad, saveFile);
+    fprintf('  Block %d: aligned (%d trials), %d bad dropped -> saved %s, %s\n', b, nBehTrials, nBad, saveFile, saveFileGood);
     nUpdated = nUpdated + 1;
 end
 
 fprintf('\nDone: %d blocks updated, %d skipped, %d alignment errors.\n', nUpdated, nSkipped, nAlignErr);
+BadTrialsReport(pNum);
 end
 
 %% =====================================================================
+function theDataGood = subsetTheData(theData, goodIdx, nTrials)
+% Subset theData to good trials only (rows indexed by goodIdx)
+fn = fieldnames(theData);
+theDataGood = struct();
+for f = 1:numel(fn)
+    v = theData.(fn{f});
+    if isnumeric(v) && size(v, 1) == nTrials
+        theDataGood.(fn{f}) = v(goodIdx, :);
+    elseif isnumeric(v) && isvector(v) && numel(v) == nTrials
+        theDataGood.(fn{f}) = v(goodIdx);
+    elseif iscell(v) && numel(v) == nTrials
+        theDataGood.(fn{f}) = v(goodIdx);
+    else
+        theDataGood.(fn{f}) = v;
+    end
+end
+theDataGood.nTrials = numel(goodIdx);
+theDataGood.badTrial = zeros(numel(goodIdx), 1);
+end
+
 function typesStr = eventTypesToStr(EEG)
 typesStr = cell(1, numel(EEG.event));
 for i = 1:numel(EEG.event)

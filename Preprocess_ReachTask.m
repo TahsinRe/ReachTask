@@ -316,3 +316,4 @@ for i = 1:numel(EEG.event)
     end
 end
 end
+
